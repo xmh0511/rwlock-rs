@@ -65,6 +65,7 @@ impl<T> RWLock<T> {
             if actual == WRITING {
                 current = IDLE;
             }
+            std::hint::spin_loop();
         }
         ReadOnlyGuard {
             data: unsafe { &*self.data.get() },
@@ -77,7 +78,9 @@ impl<T> RWLock<T> {
             .state
             .compare_exchange_weak(IDLE, WRITING, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
-        {}
+        {
+            std::hint::spin_loop();
+        }
         LockGuard {
             data: unsafe { &mut *self.data.get() },
             lock: &self,
