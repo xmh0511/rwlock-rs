@@ -1,16 +1,14 @@
 use std::{
     cell::UnsafeCell,
     ops::{Deref, DerefMut},
-    sync::atomic::{AtomicI32, AtomicU8, Ordering},
+    sync::atomic::{AtomicI32, Ordering},
 };
 
-const IDLE: u8 = 0;
-const READING: u8 = 1;
-const WRITING: u8 = 2;
+const IDLE: i32 = 0;
+const WRITING: i32 = -1;
 
 pub struct RWLock<T> {
-    state: AtomicU8,
-    reader: AtomicI32,
+    state: AtomicI32,
     data: UnsafeCell<T>,
 }
 pub struct ReadOnlyGuard<'a, T> {
@@ -26,10 +24,18 @@ impl<'a, T> Deref for ReadOnlyGuard<'a, T> {
 }
 impl<'a, T> Drop for ReadOnlyGuard<'a, T> {
     fn drop(&mut self) {
-        // the last reader, who is responsible for setting the `state` to `IDLE`
-        if self.lock.reader.fetch_sub(1, Ordering::Relaxed) == 1 {
-            self.lock.state.store(IDLE, Ordering::Release);
-        }
+        // the last reader is responsible for setting the `state` to `IDLE`
+		self.lock.state.fetch_sub(1, Ordering::Release);
+		// [atomics.order] p2
+		// An atomic operation A that performs a release operation on an atomic object M 
+		// synchronizes with an atomic operation B 
+		// that performs an acquire operation on M and 
+		// takes its value from any side effect in the release sequence headed by A.
+
+		// This guarantees that any other reader `R` synchronizes with the writer
+		// since the release sequence headed by `R` comprises the last reader writing `IDLE` 
+		// that synchronizes with writer
+		// this should be upheld, otherwise the reader other than the last would be data race with the writer
     }
 }
 
@@ -37,33 +43,27 @@ impl<T> RWLock<T> {
     pub fn new(val: T) -> Self {
         RWLock {
             data: UnsafeCell::new(val),
-            state: AtomicU8::new(IDLE),
-            reader: AtomicI32::new(0),
+            state: AtomicI32::new(IDLE),
         }
     }
     pub fn read(&self) -> ReadOnlyGuard<'_, T> {
-        // add the count for reader
-        self.reader.fetch_add(1, Ordering::Relaxed);
         // initially assuming the state is IDLE
         let mut current = IDLE;
-        // There may be other readers, so the actual `state` is `READING`,
-        // so set `current` to `READING` to try to acquire the read lock
-        // Because the above `fetch_add` races with `fetch_sub` in reader drop,
-        // If the `fetch_sub` in drop of that existed reader wins and set the `state` to `IDLE`,
-        // and `current` here is previously set to `READING`,
-        // the comparsion will fail, so `current` should be set to `IDLE` for the next comparison
-        // another case is that, when `current` is set ot `READING`, the writer instead wins the race
-        // so the current is set to `IDLE` to try to acquire the read lock from releasing of writer
+		// the corresponding reader count is `1`
+		let mut reader_count = 1;
+		// if the comparison fails, it means either there exits a writer or at least one reader
+		// For the case when having readers, increase the number based on the current numbers
+		// For the exclusive writer, waiting for IDLE
+		// The drop of the writer releases the `state`, all RMW operations of the subsequent readers will be headed by it
+		// so the drop of the writer synchronizes with any of them
         while let Err(actual) =
             self.state
-                .compare_exchange_weak(current, READING, Ordering::Acquire, Ordering::Relaxed)
+                .compare_exchange_weak(current, reader_count, Ordering::Acquire, Ordering::Relaxed)
         {
-            if actual == IDLE || actual == READING {
+			// reader already exists
+            if actual > 0 {
                 current = actual;
-            }
-            //assert_ne!(actual,WRITING);
-            if actual == WRITING {
-                current = IDLE;
+				reader_count = actual +1; // increase the number of reader
             }
             std::hint::spin_loop();
         }
