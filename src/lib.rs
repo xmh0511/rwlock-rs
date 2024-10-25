@@ -12,30 +12,29 @@ pub struct RWLock<T> {
     data: UnsafeCell<T>,
 }
 pub struct ReadOnlyGuard<'a, T> {
-    data: &'a T,
     lock: &'a RWLock<T>,
 }
 impl<'a, T> Deref for ReadOnlyGuard<'a, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        self.data
+        unsafe { &*self.lock.data.get() }
     }
 }
 impl<'a, T> Drop for ReadOnlyGuard<'a, T> {
     fn drop(&mut self) {
         // the last reader is responsible for setting the `state` to `IDLE`
-		self.lock.state.fetch_sub(1, Ordering::Release);
-		// [atomics.order] p2
-		// An atomic operation A that performs a release operation on an atomic object M 
-		// synchronizes with an atomic operation B 
-		// that performs an acquire operation on M and 
-		// takes its value from any side effect in the release sequence headed by A.
+        self.lock.state.fetch_sub(1, Ordering::Release);
+        // [atomics.order] p2
+        // An atomic operation A that performs a release operation on an atomic object M
+        // synchronizes with an atomic operation B
+        // that performs an acquire operation on M and
+        // takes its value from any side effect in the release sequence headed by A.
 
-		// This guarantees that any other reader `R` synchronizes with the writer
-		// since the release sequence headed by `R` comprises the last reader writing `IDLE` 
-		// that synchronizes with writer
-		// this should be upheld, otherwise the reader other than the last would be data race with the writer
+        // This guarantees that any other reader `R` synchronizes with the writer
+        // since the release sequence headed by `R` comprises the last reader writing `IDLE`
+        // that synchronizes with writer
+        // this should be upheld, otherwise the reader other than the last would be data race with the writer
     }
 }
 
@@ -49,28 +48,44 @@ impl<T> RWLock<T> {
     pub fn read(&self) -> ReadOnlyGuard<'_, T> {
         // initially assuming the state is IDLE
         let mut current = IDLE;
-		// the corresponding reader count is `1`
-		let mut reader_count = 1;
-		// if the comparison fails, it means either there exits a writer or at least one reader
-		// For the case when having readers, increase the number based on the current numbers
-		// For the exclusive writer, waiting for IDLE
-		// The drop of the writer releases the `state`, all RMW operations of the subsequent readers will be headed by it
-		// so the drop of the writer synchronizes with any of them
-        while let Err(actual) =
-            self.state
-                .compare_exchange_weak(current, reader_count, Ordering::Acquire, Ordering::Relaxed)
-        {
-			// reader already exists
+        // the corresponding reader count is `1`
+        let mut reader_count = 1;
+        // if the comparison fails, it means either there exits a writer or at least one reader
+        // For the case when having readers, increase the number based on the current numbers
+        // For the exclusive writer, waiting for IDLE
+        // The drop of the writer releases the `state`, all RMW operations of the subsequent readers will be headed by it
+        // so the drop of the writer synchronizes with any of them
+        while let Err(actual) = self.state.compare_exchange_weak(
+            current,
+            reader_count,
+            Ordering::Acquire,
+            Ordering::Relaxed,
+        ) {
+            if actual == i32::MAX {
+                panic!(
+                    "the count of readers will exceed the maximum number of supported {}",
+                    i32::MAX
+                );
+            }
+            // reader already exists
             if actual > 0 {
                 current = actual;
-				reader_count = actual +1; // increase the number of reader
+                reader_count = actual + 1; // increase the number of reader
             }
+            //println!("actual {actual} current {current} reader_count {reader_count}");
+
+            // writer already exists, so just waiting for `current=IDLE` and setting `reader_count=1`,
+            // or comparison failed due to previously existing readers such that `current` is the number of readers
+            // and reader_count is one greater than that count
+            // however, the `state` is `IDLE` anyway now so do something the same as above
+            if actual == WRITING || actual == IDLE {
+                current = IDLE;
+                reader_count = 1;
+            }
+
             std::hint::spin_loop();
         }
-        ReadOnlyGuard {
-            data: unsafe { &*self.data.get() },
-            lock: &self,
-        }
+        ReadOnlyGuard { lock: &self }
     }
     pub fn write(&self) -> LockGuard<'_, T> {
         // acquire the lock iif there is no reader
@@ -81,26 +96,22 @@ impl<T> RWLock<T> {
         {
             std::hint::spin_loop();
         }
-        LockGuard {
-            data: unsafe { &mut *self.data.get() },
-            lock: &self,
-        }
+        LockGuard { lock: &self }
     }
 }
 pub struct LockGuard<'a, T> {
-    data: &'a mut T,
     lock: &'a RWLock<T>,
 }
 impl<'a, T> Deref for LockGuard<'a, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        self.data
+        unsafe { &*self.lock.data.get() }
     }
 }
 impl<'a, T> DerefMut for LockGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.data
+        unsafe { &mut *self.lock.data.get() }
     }
 }
 impl<'a, T> Drop for LockGuard<'a, T> {
