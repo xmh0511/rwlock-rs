@@ -23,7 +23,7 @@ impl<'a, T> Deref for ReadOnlyGuard<'a, T> {
 }
 impl<'a, T> Drop for ReadOnlyGuard<'a, T> {
     fn drop(&mut self) {
-        // the last reader is responsible for setting the `state` to `IDLE`
+        // the last reader `Rl` is responsible for setting the `state` to `IDLE`
         self.lock.state.fetch_sub(1, Ordering::Release);
         // [atomics.order] p2
         // An atomic operation A that performs a release operation on an atomic object M
@@ -31,10 +31,11 @@ impl<'a, T> Drop for ReadOnlyGuard<'a, T> {
         // that performs an acquire operation on M and
         // takes its value from any side effect in the release sequence headed by A.
 
+        // modification order: {...,R,R1,R2,...,Rl_drop, W,...}
         // This guarantees that any other reader `R` synchronizes with the writer
-        // since the release sequence headed by `R` comprises the last reader writing `IDLE`
-        // that synchronizes with writer
-        // this should be upheld, otherwise the reader other than the last would be data race with the writer
+        // since the release sequence headed by `R` comprises the drop of the last reader `Rl` writing `IDLE`
+        // that synchronizes with the writer `W`
+        // this should be upheld(i.e. using release memory ordering), otherwise the reader other than the last would be data race with the writer
     }
 }
 
@@ -48,12 +49,16 @@ impl<T> RWLock<T> {
     pub fn read(&self) -> ReadOnlyGuard<'_, T> {
         // initially assuming the state is IDLE
         let mut current = IDLE;
-        // the corresponding reader count is `1`
+        // and the corresponding reader count is `1`
         let mut reader_count = 1;
-        // if the comparison fails, it means either there exits a writer or at least one reader
-        // For the case when having readers, increase the number based on the current numbers
-        // For the exclusive writer, waiting for IDLE
-        // The drop of the writer releases the `state`, all RMW operations of the subsequent readers will be headed by it
+        // if the comparison fails, it means either there exists a writer or at least one reader
+        // For the case of having readers, increase the number based on the current number the failed CAS loaded
+
+        // modification order: {...,W_drop,R0,R1,R2,...}
+        // For the exclusive writer, just waiting for IDLE
+        // [intro.races] p5
+        // The drop of the writer releases the `state`, all RMW operations produced by the subsequent readers will be headed by it
+        // [atomics.order] p2
         // so the drop of the writer synchronizes with any of them
         while let Err(actual) = self.state.compare_exchange_weak(
             current,
@@ -67,22 +72,20 @@ impl<T> RWLock<T> {
                     i32::MAX
                 );
             }
+            //println!("actual {actual} current {current} reader_count {reader_count}");
+
             // reader already exists
             if actual > 0 {
                 current = actual;
                 reader_count = actual + 1; // increase the number of reader
-            }
-            //println!("actual {actual} current {current} reader_count {reader_count}");
-
-            // writer already exists, so just waiting for `current=IDLE` and setting `reader_count=1`,
-            // or comparison failed due to previously existing readers such that `current` is the number of readers
-            // and reader_count is one greater than that count
-            // however, the `state` is `IDLE` anyway now so do something the same as above
-            if actual == WRITING || actual == IDLE {
+            } else if actual == WRITING || actual == IDLE {
+                // writer already exists, so just waiting for `current=IDLE` and setting `reader_count=1`,
+                // or comparison failed due to previously existing readers checked in the CAS of the preceding iteration where `current` was set to the number of readers
+                // and reader_count was one greater than that count
+                // however, the `state` is now `IDLE` anyway, so do something the same as below
                 current = IDLE;
                 reader_count = 1;
             }
-
             std::hint::spin_loop();
         }
         ReadOnlyGuard { lock: &self }
