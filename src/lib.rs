@@ -14,14 +14,14 @@ pub struct RWLock<T> {
 pub struct ReadOnlyGuard<'a, T> {
     lock: &'a RWLock<T>,
 }
-impl<'a, T> Deref for ReadOnlyGuard<'a, T> {
+impl<T> Deref for ReadOnlyGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
         unsafe { &*self.lock.data.get() }
     }
 }
-impl<'a, T> Drop for ReadOnlyGuard<'a, T> {
+impl<T> Drop for ReadOnlyGuard<'_, T> {
     fn drop(&mut self) {
         // the last reader `Rl` is responsible for setting the `state` to `IDLE`
         self.lock.state.fetch_sub(1, Ordering::Release);
@@ -31,9 +31,9 @@ impl<'a, T> Drop for ReadOnlyGuard<'a, T> {
         // that performs an acquire operation on M and
         // takes its value from any side effect in the release sequence headed by A.
 
-        // modification order: {...,R,R1,R2,...,Rl_drop, W,W_drop,...}
-        // This guarantees that any other reader `R` synchronizes with the writer
-        // since the release sequence headed by `R` comprises the drop of the last reader `Rl` writing `IDLE`
+        // modification order: {...,R_drop,...,Rl_drop, W,W_drop,...}
+        // This guarantees that any drop of the other readers `R_drop` synchronizes with the writer `W`
+        // since the release sequence headed by `R_drop` comprises the drop of the last reader `Rl` writing `IDLE`
         // that synchronizes with the writer `W`
         // this should be upheld(i.e. using release memory ordering), otherwise the reader other than the last would be data race with the writer
     }
@@ -55,7 +55,7 @@ impl<T> RWLock<T> {
         // For the case of having readers, increase the number based on the current number the failed CAS loaded
 
         // modification order: {...,W,W_drop,R0,R1,R2,...}
-        // For the exclusive writer, just waiting for IDLE
+        // For the case of having the exclusive writer, just waiting for IDLE
         // [intro.races] p5
         // The drop of the writer releases the `state`, all RMW operations produced by the subsequent readers will be headed by it
         // [atomics.order] p2
@@ -88,7 +88,7 @@ impl<T> RWLock<T> {
             }
             std::hint::spin_loop();
         }
-        ReadOnlyGuard { lock: &self }
+        ReadOnlyGuard { lock: self }
     }
     pub fn write(&self) -> LockGuard<'_, T> {
         // acquire the lock iif there is no reader
@@ -99,25 +99,25 @@ impl<T> RWLock<T> {
         {
             std::hint::spin_loop();
         }
-        LockGuard { lock: &self }
+        LockGuard { lock: self }
     }
 }
 pub struct LockGuard<'a, T> {
     lock: &'a RWLock<T>,
 }
-impl<'a, T> Deref for LockGuard<'a, T> {
+impl<T> Deref for LockGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
         unsafe { &*self.lock.data.get() }
     }
 }
-impl<'a, T> DerefMut for LockGuard<'a, T> {
+impl<T> DerefMut for LockGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut *self.lock.data.get() }
     }
 }
-impl<'a, T> Drop for LockGuard<'a, T> {
+impl<T> Drop for LockGuard<'_, T> {
     fn drop(&mut self) {
         self.lock.state.store(IDLE, Ordering::Release);
     }
