@@ -31,7 +31,7 @@ impl<'a, T> Drop for ReadOnlyGuard<'a, T> {
         // that performs an acquire operation on M and
         // takes its value from any side effect in the release sequence headed by A.
 
-        // modification order: {...,R,R1,R2,...,Rl_drop, W,...}
+        // modification order: {...,R,R1,R2,...,Rl_drop, W,W_drop,...}
         // This guarantees that any other reader `R` synchronizes with the writer
         // since the release sequence headed by `R` comprises the drop of the last reader `Rl` writing `IDLE`
         // that synchronizes with the writer `W`
@@ -54,7 +54,7 @@ impl<T> RWLock<T> {
         // if the comparison fails, it means either there exists a writer or at least one reader
         // For the case of having readers, increase the number based on the current number the failed CAS loaded
 
-        // modification order: {...,W_drop,R0,R1,R2,...}
+        // modification order: {...,W,W_drop,R0,R1,R2,...}
         // For the exclusive writer, just waiting for IDLE
         // [intro.races] p5
         // The drop of the writer releases the `state`, all RMW operations produced by the subsequent readers will be headed by it
