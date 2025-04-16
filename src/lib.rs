@@ -31,6 +31,11 @@ impl<T> Drop for ReadOnlyGuard<'_, T> {
         // that performs an acquire operation on M and
         // takes its value from any side effect in the release sequence headed by A.
 
+        // [intro.races] p5
+        // A release sequence headed by a release operation A on an atomic object M is a maximal contiguous
+        // sub-sequence of side effects in the modification order of M, where the first operation is A,
+        // and every subsequent operation is an atomic read-modify-write operation.
+
         // modification order: {...,R_drop,...,Rl_drop, W,W_drop,...}
         // This guarantees that any drop of the other readers `R_drop` synchronizes with the writer `W`
         // since the release sequence headed by `R_drop` comprises the drop of the last reader `Rl` writing `IDLE`
