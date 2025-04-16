@@ -40,6 +40,8 @@ impl<T> Drop for ReadOnlyGuard<'_, T> {
         // This guarantees that any drop of the other readers `R_drop` synchronizes with the writer `W`
         // since the release sequence headed by `R_drop` comprises the drop of the last reader `Rl` writing `IDLE`
         // that synchronizes with the writer `W`
+        // for example, read_op is sequenced-before R_drop, R_drop synchronizes with W, W is sequenced-before write_op
+        // so read_op happens-before write_op
         // this should be upheld(i.e. using release memory ordering), otherwise the reader other than the last would be data race with the writer
     }
 }
@@ -65,6 +67,8 @@ impl<T> RWLock<T> {
         // The drop of the writer releases the `state`, all RMW operations produced by the subsequent readers will be headed by it
         // [atomics.order] p2
         // so the drop of the writer synchronizes with any of them
+        // for example, write_op is sequenced-before W_drop, W_drop synchronizes with R, R is sequenced-before read_op
+        // so write_op happens-before read_op
         while let Err(actual) = self.state.compare_exchange_weak(
             current,
             reader_count,
