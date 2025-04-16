@@ -56,13 +56,14 @@ impl<T> RWLock<T> {
     pub fn read(&self) -> ReadOnlyGuard<'_, T> {
         // initially assuming the state is IDLE
         let mut current = IDLE;
-        // and the corresponding reader count is `1`
+        // and the set reader count is `1`
         let mut reader_count = 1;
-        // if the comparison fails, it means either there exists a writer or at least one reader
+        // If the comparison fails, for the first comparison, it means either there exists a writer or at least one reader
+        // or the readers indicated by the preceding CAS were all dropped(including the subsequent winning writer that was dropped)
         // For the case of having readers, increase the number based on the current number the failed CAS loaded
 
-        // modification order: {...,W,W_drop,R0,R1,R2,...}
         // For the case of having the exclusive writer, just waiting for IDLE
+        // modification order: {...,W,W_drop,R0,R1,R2,...}
         // [intro.races] p5
         // The drop of the writer releases the `state`, all RMW operations produced by the subsequent readers will be headed by it
         // [atomics.order] p2
@@ -84,18 +85,23 @@ impl<T> RWLock<T> {
             //println!("actual {actual} current {current} reader_count {reader_count}");
 
             // reader already exists
-            if actual > 0 {
+            if actual >= 0 {
+                // Failed Reason for this branch:
+                // 1. The actual number of readers is greater than the number 0 that we assumed before the first CAS.
+                // 2. The comparison of the existing readers in the CAS of the preceding iteration failed, such that the `current`
+                // was set to the number of readers loaded by CAS,
+                // however, at this time, the previously existing readers were all dropped(including immediately followed by a writer that was dropped),
+                // anyway, the state is `IDLE`(i.e. 0) now.
                 current = actual;
                 reader_count = actual + 1; // increase the number of reader
-            } else if actual == WRITING || actual == IDLE {
+            } else if actual == WRITING {
                 // writer already exists, so just waiting for `current=IDLE` and setting `reader_count=1`,
-                // or comparison failed due to previously existing readers checked in the CAS of the preceding iteration where `current` was set to the number of readers
-                // and reader_count was one greater than that count
-                // however, the `state` is now `IDLE` anyway, so do something the same as below
                 current = IDLE;
                 reader_count = 1;
+                std::hint::spin_loop();
+            } else {
+                unreachable!("The actual state == {actual}, which is not expected");
             }
-            std::hint::spin_loop();
         }
         ReadOnlyGuard { lock: self }
     }
