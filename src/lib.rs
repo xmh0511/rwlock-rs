@@ -58,8 +58,9 @@ impl<T> RWLock<T> {
         let mut current = IDLE;
         // and the set reader count is `1`
         let mut reader_count = 1;
-        // If the comparison fails, for the first comparison, it means either there exists a writer or at least one reader
-        // or the readers indicated by the preceding CAS were all dropped(including the subsequent winning writer that was dropped)
+        // If the comparison fails, for the first comparison, it means either there exists a writer or at least one reader.
+        // Or the readers indicated by the preceding CAS were all dropped(including the writer obtained after this, which was dropped)
+
         // For the case of having readers, increase the number based on the current number the failed CAS loaded
 
         // For the case of having the exclusive writer, just waiting for IDLE
@@ -89,8 +90,8 @@ impl<T> RWLock<T> {
                 // Failed Reason for this branch:
                 // 1. The actual number of readers is greater than the number 0 that we assumed before the first CAS.
                 // 2. The comparison of the existing readers in the CAS of the preceding iteration failed, such that the `current`
-                // was set to the number of readers loaded by CAS,
-                // however, at this time, the previously existing readers were all dropped(including immediately followed by a writer that was dropped),
+                // was set to the number of readers loaded by CAS, however, at this time,
+                // the previously existing readers were all dropped(including the writer immediately obtained after this, which was dropped),
                 // anyway, the state is `IDLE`(i.e. 0) now.
                 current = actual;
                 reader_count = actual + 1; // increase the number of reader
@@ -100,7 +101,7 @@ impl<T> RWLock<T> {
                 reader_count = 1;
                 std::hint::spin_loop();
             } else {
-                unreachable!("The actual state == {actual}, which is not expected");
+                unreachable!("The actual state == {actual}, which should be unreachable");
             }
         }
         ReadOnlyGuard { lock: self }
