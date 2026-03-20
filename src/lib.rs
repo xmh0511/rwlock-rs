@@ -85,11 +85,11 @@ impl<T> RWLock<T> {
             }
             //println!("actual {actual} current {current} reader_count {reader_count}");
 
-            // reader already exists
+            // reader already exists, or go back to IDLE status.
             if actual >= 0 {
                 // Failed Reason for this branch:
-                // 1. The actual number of readers is greater than the number 0 that we assumed before the first CAS.
-                // 2. Other readers win the competition, just retry with a new number.
+                // 1. The actual number of readers is greater than 0, the number we assumed before the first CAS.
+                // 2. Other readers win the competition, retry with a new number.
                 // 3. The comparison of the existing readers in the CAS of the preceding iteration failed, such that the `current`
                 // was set to the number of readers loaded by CAS; however, at this time,
                 // the previously existing readers were all dropped(including the writer immediately obtained after this, which was dropped),
