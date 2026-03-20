@@ -89,10 +89,12 @@ impl<T> RWLock<T> {
             if actual >= 0 {
                 // Failed Reason for this branch:
                 // 1. The actual number of readers is greater than the number 0 that we assumed before the first CAS.
-                // 2. The comparison of the existing readers in the CAS of the preceding iteration failed, such that the `current`
-                // was set to the number of readers loaded by CAS, however, at this time,
+                // 2. Other readers win the competition, just retry with a new number.
+                // 3. The comparison of the existing readers in the CAS of the preceding iteration failed, such that the `current`
+                // was set to the number of readers loaded by CAS; however, at this time,
                 // the previously existing readers were all dropped(including the writer immediately obtained after this, which was dropped),
                 // anyway, the state is `IDLE`(i.e. 0) now.
+                // 4. weak compare-and-exchange operation failed spuriously. 
                 current = actual;
                 reader_count = actual + 1; // increase the number of reader
             } else if actual == WRITING {
